@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Windows-only APIs (Process, PowerShell SDK) -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Voice -->
+    <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.40.0" />
+
+    <!-- Email via Microsoft Graph (Outlook) -->
+    <PackageReference Include="Microsoft.Graph" Version="5.56.0" />
+    <PackageReference Include="Azure.Identity" Version="1.12.0" />
+
+    <!-- Local PowerShell execution -->
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.5" />
+
+    <!-- Config / hosting -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

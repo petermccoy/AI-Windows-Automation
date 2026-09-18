@@ -1,0 +1,112 @@
+@page "/"
+@rendermode InteractiveServer
+@using WindowsAgent.Orchestrator
+@using WindowsAgent.Voice
+@inject ClaudeAgentOrchestrator Orchestrator
+@inject BlazorConfirmationService Confirmation
+@inject AzureSpeechService Speech
+@inject ElevenLabsService Tts
+@inject IJSRuntime JS
+@implements IDisposable
+
+<h3>Windows Agent</h3>
+
+<div class="log" style="height:400px; overflow-y:auto; border:1px solid #ccc; padding:8px;">
+    @foreach (var line in _log)
+    {
+        <div class="@line.CssClass">@line.Text</div>
+    }
+</div>
+
+<div style="margin-top:8px;">
+    <button @onclick="ToggleRecording">@(_recording ? "Stop" : "🎤 Speak")</button>
+    <input @bind="_typedText" @bind:event="oninput" placeholder="...or type a request" style="width:60%;" />
+    <button @onclick="SendTyped">Send</button>
+</div>
+
+@if (Confirmation.PendingRequest is { } pending)
+{
+    <div class="modal" style="border:2px solid #c00; padding:12px; margin-top:12px;">
+        <strong>Confirm action: @pending.ToolName</strong>
+        <p>@pending.Description</p>
+        <button @onclick="() => Respond(true)">Approve</button>
+        <button @onclick="() => Respond(false)">Deny</button>
+    </div>
+}
+
+<audio id="ttsPlayer" @ref="_audioElementRef" controls style="display:none;"></audio>
+
+@code {
+    private readonly List<(string Text, string CssClass)> _log = new();
+    private string _typedText = "";
+    private bool _recording;
+    private ElementReference _audioElementRef;
+
+    protected override void OnInitialized()
+    {
+        Orchestrator.OnEvent += HandleAgentEvent;
+        Confirmation.PendingRequestChanged += StateHasChanged;
+    }
+
+    private void HandleAgentEvent(AgentEvent e)
+    {
+        var css = e.Kind switch
+        {
+            "tool_call" => "tool-call",
+            "tool_result" => "tool-result",
+            "final" => "final",
+            _ => "status"
+        };
+        _log.Add(($"[{e.Kind}] {e.Message}", css));
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleRecording()
+    {
+        _recording = !_recording;
+        if (_recording)
+        {
+            await JS.InvokeVoidAsync("micRecorder.start");
+        }
+        else
+        {
+            // recorder.js returns a base64-encoded WAV blob when stopped
+            var base64Wav = await JS.InvokeAsync<string>("micRecorder.stop");
+            var bytes = Convert.FromBase64String(base64Wav);
+            using var stream = new MemoryStream(bytes);
+
+            var text = await Speech.TranscribeAsync(stream, CancellationToken.None);
+            _log.Add(($"[you] {text}", "user"));
+            await RunTurn(text);
+        }
+    }
+
+    private async Task SendTyped()
+    {
+        if (string.IsNullOrWhiteSpace(_typedText)) return;
+        var text = _typedText;
+        _typedText = "";
+        _log.Add(($"[you] {text}", "user"));
+        await RunTurn(text);
+    }
+
+    private async Task RunTurn(string text)
+    {
+        var reply = await Orchestrator.HandleUserMessageAsync(text, CancellationToken.None);
+
+        if (!string.IsNullOrWhiteSpace(reply))
+        {
+            var audio = await Tts.SynthesizeAsync(reply, CancellationToken.None);
+            var base64 = Convert.ToBase64String(audio);
+            await JS.InvokeVoidAsync("ttsPlayer.play", base64);
+        }
+    }
+
+    private void Respond(bool approved) => Confirmation.Resolve(approved);
+
+    public void Dispose()
+    {
+        Orchestrator.OnEvent -= HandleAgentEvent;
+        Confirmation.PendingRequestChanged -= StateHasChanged;
+    }
+}

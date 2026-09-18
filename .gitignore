@@ -1,0 +1,27 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+publish/
+
+## Rider / VS / VS Code
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+
+## Local secrets — never commit real keys
+appsettings.*.json
+!appsettings.json
+!appsettings.Example.json
+
+## OS
+.DS_Store
+Thumbs.db
