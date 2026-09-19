@@ -65,18 +65,42 @@
         _recording = !_recording;
         if (_recording)
         {
-            await JS.InvokeVoidAsync("micRecorder.start");
+            try
+            {
+                await JS.InvokeVoidAsync("micRecorder.start");
+            }
+            catch (Exception ex)
+            {
+                _recording = false;
+                _log.Add(($"[error] Couldn't start the mic: {ex.Message}", "error"));
+            }
+            return;
         }
-        else
-        {
-            // recorder.js returns a base64-encoded WAV blob when stopped
-            var base64Wav = await JS.InvokeAsync<string>("micRecorder.stop");
-            var bytes = Convert.FromBase64String(base64Wav);
-            using var stream = new MemoryStream(bytes);
 
-            var text = await Speech.TranscribeAsync(stream, CancellationToken.None);
+        try
+        {
+            // agent.js now returns a genuine 16kHz/16-bit/mono WAV (Web Audio API,
+            // not a MediaRecorder blob) — see AzureSpeechService for why that matters.
+            var base64Wav = await JS.InvokeAsync<string>("micRecorder.stop");
+            var wavBytes = Convert.FromBase64String(base64Wav);
+
+            var text = await Speech.TranscribeAsync(wavBytes, CancellationToken.None);
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _log.Add(("[status] Didn't catch that — try again.", "status"));
+                return;
+            }
+
             _log.Add(($"[you] {text}", "user"));
             await RunTurn(text);
+        }
+        catch (Exception ex)
+        {
+            // Anything here (bad audio, Speech SDK auth, network) becomes a
+            // visible log line instead of an unhandled exception that tears
+            // down the whole Blazor Server circuit.
+            _log.Add(($"[error] Transcription failed: {ex.Message}", "error"));
         }
     }
 
@@ -91,13 +115,20 @@
 
     private async Task RunTurn(string text)
     {
-        var reply = await Orchestrator.HandleUserMessageAsync(text, CancellationToken.None);
-
-        if (!string.IsNullOrWhiteSpace(reply))
+        try
         {
-            var audio = await Speech.SynthesizeAsync(reply, CancellationToken.None);
-            var base64 = Convert.ToBase64String(audio);
-            await JS.InvokeVoidAsync("ttsPlayer.play", base64);
+            var reply = await Orchestrator.HandleUserMessageAsync(text, CancellationToken.None);
+
+            if (!string.IsNullOrWhiteSpace(reply))
+            {
+                var audio = await Speech.SynthesizeAsync(reply, CancellationToken.None);
+                var base64 = Convert.ToBase64String(audio);
+                await JS.InvokeVoidAsync("ttsPlayer.play", base64);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Add(($"[error] {ex.Message}", "error"));
         }
     }
 

@@ -17,21 +17,71 @@ public class AzureSpeechService
 
     public AzureSpeechService(AppSettingsStore settings) => _settings = settings;
 
-    /// <summary>Transcribes a single WAV audio buffer (16kHz mono PCM recommended) to text.</summary>
-    public async Task<string> TranscribeAsync(Stream wavAudio, CancellationToken ct)
+    /// <summary>Transcribes a canonical-header WAV byte array to text. Returns ""
+    /// (not an exception) if the audio was silence or unrecognizable — agent.js's
+    /// Web Audio API recorder produces real PCM WAV here, not a MediaRecorder blob
+    /// mislabeled as one, so the header this parses is trustworthy.</summary>
+    public async Task<string> TranscribeAsync(byte[] wavBytes, CancellationToken ct)
     {
         var settings = _settings.Current.AzureSpeech;
+
+        var (sampleRate, bitsPerSample, channels, dataOffset) = ParseWavHeader(wavBytes);
+
+        var format = AudioStreamFormat.GetWaveFormatPCM((uint)sampleRate, (byte)bitsPerSample, (byte)channels);
+        using var pushStream = AudioInputStream.CreatePushStream(format);
+        pushStream.Write(wavBytes[dataOffset..]);
+        pushStream.Close();
+
         var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
         speechConfig.SpeechRecognitionLanguage = "en-US";
 
-        using var audioInput = AudioConfig.FromStreamInput(new PullAudioInputStreamFromStream(wavAudio));
-        using var recognizer = new SpeechRecognizer(speechConfig, audioInput);
+        using var audioConfig = AudioConfig.FromStreamInput(pushStream);
+        using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
         var result = await recognizer.RecognizeOnceAsync().WaitAsync(ct);
 
-        return result.Reason == ResultReason.RecognizedSpeech
-            ? result.Text
-            : throw new InvalidOperationException($"Speech not recognized: {result.Reason}");
+        return result.Reason switch
+        {
+            ResultReason.RecognizedSpeech => result.Text,
+            ResultReason.NoMatch => "", // silence or nothing understood — treat as empty, not an error
+            ResultReason.Canceled => throw new InvalidOperationException(
+                $"Speech recognition canceled: {CancellationDetails.FromResult(result).ErrorDetails}"),
+            _ => throw new InvalidOperationException($"Unexpected recognition result: {result.Reason}")
+        };
+    }
+
+    /// <summary>Minimal RIFF/WAVE header parser. Scans for the "fmt " and "data"
+    /// chunks rather than assuming a fixed 44-byte layout, since some encoders
+    /// insert extra chunks (e.g. LIST/INFO) before the data chunk.</summary>
+    private static (int sampleRate, int bitsPerSample, int channels, int dataOffset) ParseWavHeader(byte[] wav)
+    {
+        if (wav.Length < 44 || wav[0] != 'R' || wav[1] != 'I' || wav[2] != 'F' || wav[3] != 'F')
+            throw new ArgumentException("Not a valid WAV file (missing RIFF header).");
+
+        int channels = 1, sampleRate = 16000, bitsPerSample = 16;
+        int pos = 12; // after "RIFF"<size>"WAVE"
+
+        while (pos + 8 <= wav.Length)
+        {
+            var chunkId = System.Text.Encoding.ASCII.GetString(wav, pos, 4);
+            var chunkSize = BitConverter.ToInt32(wav, pos + 4);
+            var chunkDataStart = pos + 8;
+
+            if (chunkId == "fmt ")
+            {
+                channels = BitConverter.ToInt16(wav, chunkDataStart + 2);
+                sampleRate = BitConverter.ToInt32(wav, chunkDataStart + 4);
+                bitsPerSample = BitConverter.ToInt16(wav, chunkDataStart + 14);
+            }
+            else if (chunkId == "data")
+            {
+                return (sampleRate, bitsPerSample, channels, chunkDataStart);
+            }
+
+            pos = chunkDataStart + chunkSize + (chunkSize % 2); // chunks are word-aligned
+        }
+
+        throw new ArgumentException("WAV file has no 'data' chunk.");
     }
 
     /// <summary>Synthesizes speech to MP3 bytes for playback through the browser's
@@ -53,21 +103,5 @@ public class AzureSpeechService
         return result.Reason == ResultReason.SynthesizingAudioCompleted
             ? result.AudioData
             : throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}");
-    }
-}
-
-/// <summary>Adapts a plain Stream to the PullAudioInputStream the Speech SDK expects.</summary>
-internal class PullAudioInputStreamFromStream : PullAudioInputStreamCallback
-{
-    private readonly Stream _stream;
-    public PullAudioInputStreamFromStream(Stream stream) => _stream = stream;
-
-    public override int Read(byte[] dataBuffer, uint size) =>
-        _stream.Read(dataBuffer, 0, (int)size);
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _stream.Dispose();
-        base.Dispose(disposing);
     }
 }
