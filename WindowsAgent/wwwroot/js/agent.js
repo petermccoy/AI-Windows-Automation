@@ -5,6 +5,16 @@
 // This captures real PCM samples, downsamples to 16kHz, and wraps them
 // in a canonical 44-byte WAV header so the bytes are what they claim to be.
 
+// TEMPORARY DIAGNOSTIC LOGGING — server-side logging in AzureSpeechService.cs
+// showed TranscribeAsync is never even being called, meaning the hang the user
+// is seeing is upstream of the C# entirely: somewhere in this file, or in the
+// JS-interop dispatch of these calls from Chat.razor. These console.log calls
+// (check DevTools Console, not the app's chat log) pin down exactly which step
+// — if any — is the one that never completes. Remove once root-caused.
+function micLog(message) {
+    console.log(`[${new Date().toISOString().slice(11, 23)}] micRecorder: ${message}`);
+}
+
 window.micRecorder = (function () {
     let audioContext, processor, source, stream;
     let chunks = [];
@@ -12,35 +22,56 @@ window.micRecorder = (function () {
 
     return {
         start: async function () {
-            chunks = [];
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            source = audioContext.createMediaStreamSource(stream);
+            micLog("start() called");
+            try {
+                chunks = [];
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                micLog("getUserMedia resolved");
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                micLog(`AudioContext created, state=${audioContext.state}, sampleRate=${audioContext.sampleRate}`);
+                source = audioContext.createMediaStreamSource(stream);
 
-            // ScriptProcessorNode is deprecated but universally supported;
-            // an AudioWorklet is the modern replacement if you want to remove
-            // the deprecation warning later.
-            processor = audioContext.createScriptProcessor(4096, 1, 1);
-            processor.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+                // ScriptProcessorNode is deprecated but universally supported;
+                // an AudioWorklet is the modern replacement if you want to remove
+                // the deprecation warning later.
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                processor.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
 
-            source.connect(processor);
-            processor.connect(audioContext.destination);
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                micLog("start() complete, recording");
+            } catch (err) {
+                micLog(`start() THREW: ${err}`);
+                throw err;
+            }
         },
 
         stop: function () {
-            return new Promise(resolve => {
-                processor.disconnect();
-                source.disconnect();
-                stream.getTracks().forEach(t => t.stop());
+            micLog(`stop() called, chunks captured=${chunks.length}`);
+            return new Promise((resolve, reject) => {
+                try {
+                    processor.disconnect();
+                    source.disconnect();
+                    stream.getTracks().forEach(t => t.stop());
+                    micLog("audio graph disconnected");
 
-                const nativeRate = audioContext.sampleRate;
-                const merged = mergeFloat32(chunks);
-                const downsampled = downsample(merged, nativeRate, TARGET_SAMPLE_RATE);
-                const pcm16 = floatTo16BitPCM(downsampled);
-                const wavBuffer = encodeWav(pcm16, TARGET_SAMPLE_RATE);
+                    const nativeRate = audioContext.sampleRate;
+                    const merged = mergeFloat32(chunks);
+                    micLog(`merged ${merged.length} samples`);
+                    const downsampled = downsample(merged, nativeRate, TARGET_SAMPLE_RATE);
+                    micLog(`downsampled to ${downsampled.length} samples`);
+                    const pcm16 = floatTo16BitPCM(downsampled);
+                    const wavBuffer = encodeWav(pcm16, TARGET_SAMPLE_RATE);
+                    micLog(`WAV encoded, ${wavBuffer.byteLength} bytes`);
 
-                audioContext.close();
-                resolve(arrayBufferToBase64(wavBuffer));
+                    audioContext.close();
+                    const base64 = arrayBufferToBase64(wavBuffer);
+                    micLog(`base64 encoded, ${base64.length} chars — resolving`);
+                    resolve(base64);
+                } catch (err) {
+                    micLog(`stop() THREW: ${err}`);
+                    reject(err);
+                }
             });
         }
     };
