@@ -13,6 +13,14 @@ namespace WindowsAgent.Voice;
 /// </summary>
 public class AzureSpeechService
 {
+    // Azure Speech normally responds in well under a second; a healthy call that's
+    // still running after this long means the network path to the Speech endpoint
+    // is stalling (proxy/firewall/VPN), not that recognition is "still thinking."
+    // Without a bound here, a stalled call can block the calling Blazor circuit's
+    // synchronization context long enough for the client's SignalR keep-alive to
+    // give up and force a reconnect — this turns that into a fast, clear failure.
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+
     private readonly AppSettingsStore _settings;
 
     public AzureSpeechService(AppSettingsStore settings) => _settings = settings;
@@ -38,7 +46,18 @@ public class AzureSpeechService
         using var audioConfig = AudioConfig.FromStreamInput(pushStream);
         using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
-        var result = await recognizer.RecognizeOnceAsync().WaitAsync(ct);
+        SpeechRecognitionResult result;
+        try
+        {
+            result = await recognizer.RecognizeOnceAsync().WaitAsync(RequestTimeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            throw new InvalidOperationException(
+                $"Azure Speech didn't respond within {RequestTimeout.TotalSeconds:0}s — check " +
+                "AzureSpeech:SubscriptionKey/Region on the Settings page and network connectivity " +
+                "to Azure (proxy/firewall/VPN can silently block this).");
+        }
 
         return result.Reason switch
         {
@@ -98,10 +117,26 @@ public class AzureSpeechService
         // disambiguates from the SpeechSynthesizer(SpeechConfig, AutoDetectSourceLanguageConfig)
         // overload, which a bare null would otherwise be ambiguous against.
         using var synthesizer = new SpeechSynthesizer(speechConfig, (AudioConfig?)null);
-        using var result = await synthesizer.SpeakTextAsync(text).WaitAsync(ct);
 
-        return result.Reason == ResultReason.SynthesizingAudioCompleted
-            ? result.AudioData
-            : throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}");
+        SpeechSynthesisResult? result = null;
+        try
+        {
+            result = await synthesizer.SpeakTextAsync(text).WaitAsync(RequestTimeout, ct);
+
+            return result.Reason == ResultReason.SynthesizingAudioCompleted
+                ? result.AudioData
+                : throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}");
+        }
+        catch (TimeoutException)
+        {
+            throw new InvalidOperationException(
+                $"Azure Speech didn't respond within {RequestTimeout.TotalSeconds:0}s — check " +
+                "AzureSpeech:SubscriptionKey/Region on the Settings page and network connectivity " +
+                "to Azure (proxy/firewall/VPN can silently block this).");
+        }
+        finally
+        {
+            result?.Dispose();
+        }
     }
 }
