@@ -2,14 +2,14 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Options;
+using WindowsAgent.Agent;
 using WindowsAgent.Configuration;
 
 namespace WindowsAgent.Orchestrator;
 
 /// <summary>Thin wrapper over POST /v1/messages, including tool-use support.
 /// There's no official Anthropic .NET SDK, so this talks HTTP directly.</summary>
-public class AnthropicClient
+public class AnthropicClient : IClaudeClient
 {
     // ContentBlock carries every field any block type might use (text, tool_use,
     // tool_result), so most of them are null on any given instance. Without
@@ -23,13 +23,12 @@ public class AnthropicClient
     };
 
     private readonly HttpClient _http;
-    private readonly AnthropicOptions _options;
+    private readonly AppSettingsStore _settings;
 
-    public AnthropicClient(HttpClient http, IOptions<AnthropicOptions> options)
+    public AnthropicClient(HttpClient http, AppSettingsStore settings)
     {
-        _options = options.Value;
+        _settings = settings;
         http.BaseAddress = new Uri("https://api.anthropic.com/");
-        http.DefaultRequestHeaders.Add("x-api-key", _options.ApiKey);
         http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         _http = http;
@@ -37,20 +36,30 @@ public class AnthropicClient
 
     public async Task<AnthropicResponse> CreateMessageAsync(
         List<AnthropicMessage> messages,
-        object[] tools,
+        ToolRegistry tools,
         string systemPrompt,
         CancellationToken ct)
     {
+        var settings = _settings.Current.Anthropic;
+
         var request = new
         {
-            model = _options.Model,
-            max_tokens = _options.MaxTokens,
+            model = settings.Model,
+            max_tokens = settings.MaxTokens,
             system = systemPrompt,
             messages,
-            tools
+            tools = tools.ToAnthropicToolDefinitions()
         };
 
-        var response = await _http.PostAsJsonAsync("v1/messages", request, SerializerOptions, ct);
+        // API key is attached per-request (not in DefaultRequestHeaders set once in the
+        // constructor) so a key changed on the Settings page takes effect immediately.
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "v1/messages")
+        {
+            Content = JsonContent.Create(request, options: SerializerOptions)
+        };
+        httpRequest.Headers.Add("x-api-key", settings.ApiKey);
+
+        var response = await _http.SendAsync(httpRequest, ct);
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<AnthropicResponse>(SerializerOptions, ct);

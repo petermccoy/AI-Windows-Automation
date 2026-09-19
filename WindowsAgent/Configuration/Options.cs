@@ -20,6 +20,21 @@ public class ElevenLabsOptions
     public string VoiceId { get; set; } = "";
 }
 
+/// <summary>Seed defaults for calling Claude through AWS Bedrock's Converse API
+/// instead of the direct Anthropic API. See AppSettingsStore for the live,
+/// Settings-page-editable copy of these values.</summary>
+public class BedrockOptions
+{
+    /// <summary>When true, credentials come from the standard AWS chain (environment,
+    /// shared config file, IAM role) instead of AccessKeyId/SecretAccessKey below.</summary>
+    public bool UseDefaultCredentialChain { get; set; } = false;
+    public string AccessKeyId { get; set; } = "";
+    public string SecretAccessKey { get; set; } = "";
+    public string Region { get; set; } = "us-east-1";
+    public string ModelId { get; set; } = "";
+    public int MaxTokens { get; set; } = 2048;
+}
+
 public class GraphOptions
 {
     public string TenantId { get; set; } = "";

@@ -5,7 +5,6 @@
 @inject ClaudeAgentOrchestrator Orchestrator
 @inject BlazorConfirmationService Confirmation
 @inject AzureSpeechService Speech
-@inject ElevenLabsService Tts
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -96,7 +95,7 @@
 
         if (!string.IsNullOrWhiteSpace(reply))
         {
-            var audio = await Tts.SynthesizeAsync(reply, CancellationToken.None);
+            var audio = await Speech.SynthesizeAsync(reply, CancellationToken.None);
             var base64 = Convert.ToBase64String(audio);
             await JS.InvokeVoidAsync("ttsPlayer.play", base64);
         }

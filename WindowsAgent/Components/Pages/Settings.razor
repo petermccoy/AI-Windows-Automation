@@ -1,0 +1,137 @@
+@page "/settings"
+@rendermode InteractiveServer
+@using WindowsAgent.Configuration
+@inject AppSettingsStore SettingsStore
+
+<h3>Settings</h3>
+
+<div style="margin-bottom:12px;">
+    <label style="display:block; font-weight:bold;">Claude provider</label>
+    <select @bind="_settings.Provider">
+        @foreach (var provider in Enum.GetValues<ClaudeProvider>())
+        {
+            <option value="@provider">@provider</option>
+        }
+    </select>
+</div>
+
+@if (_settings.Provider == ClaudeProvider.Anthropic)
+{
+    <fieldset style="margin-bottom:12px;">
+        <legend>Anthropic API</legend>
+        <div style="margin-bottom:8px;">
+            <label style="display:block;">API key</label>
+            <input type="password" @bind="_settings.Anthropic.ApiKey" style="width:100%; max-width:420px;" />
+        </div>
+        <div style="margin-bottom:8px;">
+            <label style="display:block;">Model</label>
+            <input @bind="_settings.Anthropic.Model" style="width:100%; max-width:420px;" />
+        </div>
+        <div>
+            <label style="display:block;">Max tokens</label>
+            <input type="number" @bind="_settings.Anthropic.MaxTokens" style="width:120px;" />
+        </div>
+    </fieldset>
+}
+else
+{
+    <fieldset style="margin-bottom:12px;">
+        <legend>AWS Bedrock</legend>
+        <div style="margin-bottom:8px;">
+            <label>
+                <input type="checkbox" @bind="_settings.Bedrock.UseDefaultCredentialChain" />
+                Use default AWS credential chain (IAM role / environment / shared config)
+            </label>
+        </div>
+        @if (!_settings.Bedrock.UseDefaultCredentialChain)
+        {
+            <div style="margin-bottom:8px;">
+                <label style="display:block;">Access key ID</label>
+                <input @bind="_settings.Bedrock.AccessKeyId" style="width:100%; max-width:420px;" />
+            </div>
+            <div style="margin-bottom:8px;">
+                <label style="display:block;">Secret access key</label>
+                <input type="password" @bind="_settings.Bedrock.SecretAccessKey" style="width:100%; max-width:420px;" />
+            </div>
+        }
+        <div style="margin-bottom:8px;">
+            <label style="display:block;">Region</label>
+            <input @bind="_settings.Bedrock.Region" placeholder="us-east-1" style="width:100%; max-width:420px;" />
+        </div>
+        <div style="margin-bottom:8px;">
+            <label style="display:block;">Model ID</label>
+            <input @bind="_settings.Bedrock.ModelId" placeholder="us.anthropic.claude-sonnet-5-...-v1:0" style="width:100%; max-width:420px;" />
+        </div>
+        <div>
+            <label style="display:block;">Max tokens</label>
+            <input type="number" @bind="_settings.Bedrock.MaxTokens" style="width:120px;" />
+        </div>
+    </fieldset>
+}
+
+<fieldset style="margin-bottom:12px;">
+    <legend>Azure Speech (speech-to-text and text-to-speech)</legend>
+    <div style="margin-bottom:8px;">
+        <label style="display:block;">Subscription key</label>
+        <input type="password" @bind="_settings.AzureSpeech.SubscriptionKey" style="width:100%; max-width:420px;" />
+    </div>
+    <div style="margin-bottom:8px;">
+        <label style="display:block;">Region</label>
+        <input @bind="_settings.AzureSpeech.Region" placeholder="eastus" style="width:100%; max-width:420px;" />
+    </div>
+    <div>
+        <label style="display:block;">Voice</label>
+        <input @bind="_settings.AzureSpeech.Voice" placeholder="en-US-JennyNeural" style="width:100%; max-width:420px;" />
+    </div>
+</fieldset>
+
+<button @onclick="Save">Save</button>
+@if (_saved)
+{
+    <span style="color:green; margin-left:8px;">Saved.</span>
+}
+
+@code {
+    private AppSettings _settings = new();
+    private bool _saved;
+
+    protected override void OnInitialized()
+    {
+        // Edit a clone so a page refresh/navigation-away without Save doesn't
+        // silently apply half-typed changes to the live settings.
+        _settings = Clone(SettingsStore.Current);
+    }
+
+    private void Save()
+    {
+        SettingsStore.Save(_settings);
+        _settings = Clone(SettingsStore.Current);
+        _saved = true;
+    }
+
+    private static AppSettings Clone(AppSettings source) => new()
+    {
+        Provider = source.Provider,
+        Anthropic = new AnthropicSettings
+        {
+            ApiKey = source.Anthropic.ApiKey,
+            Model = source.Anthropic.Model,
+            MaxTokens = source.Anthropic.MaxTokens
+        },
+        Bedrock = new BedrockSettings
+        {
+            UseDefaultCredentialChain = source.Bedrock.UseDefaultCredentialChain,
+            AccessKeyId = source.Bedrock.AccessKeyId,
+            SecretAccessKey = source.Bedrock.SecretAccessKey,
+            Region = source.Bedrock.Region,
+            ModelId = source.Bedrock.ModelId,
+            MaxTokens = source.Bedrock.MaxTokens
+        },
+        AzureSpeech = new AzureSpeechSettings
+        {
+            SubscriptionKey = source.AzureSpeech.SubscriptionKey,
+            Region = source.AzureSpeech.Region,
+            Voice = source.AzureSpeech.Voice
+        }
+    };
+}

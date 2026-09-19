@@ -12,8 +12,14 @@ mic audio ──► Azure Speech (STT) ──► text
                                        ▼
                         ClaudeAgentOrchestrator.HandleUserMessageAsync
                                        │
-                     POST /v1/messages (Anthropic API, tools attached)
-                                       │
+                       ClaudeClientFactory.Current (Settings-page choice)
+                          │                              │
+                   AnthropicClient                BedrockClaudeClient
+                   POST /v1/messages              Bedrock Converse API
+                   (Anthropic API)                 (AWS credentials)
+                          │                              │
+                          └──────────────┬───────────────┘
+                                         ▼
                      stop_reason == "tool_use"?
                         │no                  │yes
                         ▼                    ▼
@@ -25,8 +31,17 @@ mic audio ──► Azure Speech (STT) ──► text
                         │               - ExecuteAsync() → ToolResult
                         │               - append tool_result, loop again
                         ▼
-                 ElevenLabs (TTS) ──► <audio> element in the browser
+                Azure Speech (TTS) ──► <audio> element in the browser
 ```
+
+Both Claude backends translate to/from the same internal
+`AnthropicMessage`/`ContentBlock`/`AnthropicResponse` shapes, so
+`ClaudeAgentOrchestrator` and every `IAgentTool` are provider-agnostic —
+switching providers on the Settings page changes nothing else in the loop.
+
+ElevenLabs (`Voice/ElevenLabsService.cs`) is still in the tree but not wired
+into `Program.cs`/`Chat.razor` — parked in favor of Azure Speech's own TTS,
+which needed no second vendor account.
 
 Everything runs in-process. There is no separate service boundary between
 "orchestrator" and "hands" the way the n8n version had one — the tradeoff is
@@ -42,22 +57,30 @@ WindowsAgent/
   Agent/
     IAgentTool.cs           tool contract every action implements
     ToolResult.cs
-    ToolRegistry.cs          DI-populated list of tools → Anthropic tool defs
+    ToolRegistry.cs          DI-populated list of tools → per-provider tool defs
     Tools/
       OpenAppTool.cs         Process.Start, allowlisted
       RunPowerShellTool.cs   PowerShell SDK, timeout-bound, confirm required
       SendEmailTool.cs       Microsoft Graph (not Outlook UI automation)
       ClaudeCodeTool.cs      shells out to `claude -p ... --output-format json`
   Orchestrator/
-    AnthropicClient.cs       raw HTTP wrapper for /v1/messages (no official C# SDK exists)
+    IClaudeClient.cs             one CreateMessageAsync contract both backends implement
+    AnthropicClient.cs           raw HTTP wrapper for /v1/messages (no official C# SDK exists)
+    BedrockClaudeClient.cs       AWS Bedrock Converse API, translated to the same DTOs
+    ClaudeClientFactory.cs       picks AnthropicClient vs BedrockClaudeClient per AppSettingsStore.Current.Provider
     IConfirmationService.cs
     ClaudeAgentOrchestrator.cs   the tool-use loop
   Voice/
-    AzureSpeechService.cs    STT
-    ElevenLabsService.cs     TTS
+    AzureSpeechService.cs    STT and TTS (native, no second voice vendor)
+    ElevenLabsService.cs     TTS — present but unwired, see "Known gaps"
+  Configuration/
+    Options.cs               appsettings.json-bound seed defaults
+    AppSettingsStore.cs       live settings (provider, credentials, model) edited from /settings, persisted to %LOCALAPPDATA%\WindowsAgent\settings.json
   Components/
+    Layout/MainLayout.razor  Chat / Settings nav
     BlazorConfirmationService.cs   implements IConfirmationService via TaskCompletionSource
     Pages/Chat.razor         mic button, transcript, confirm modal
+    Pages/Settings.razor     provider + credentials + Azure Speech config, backed by AppSettingsStore
   wwwroot/js/agent.js        MediaRecorder mic capture + TTS playback
   Program.cs                 DI wiring
   appsettings.json
@@ -87,16 +110,43 @@ user clicks Approve/Deny in the modal — the C# call stack is genuinely
 suspended mid-tool-loop, not polling, so there's no race between the model
 moving on and the user answering.
 
+## Configuring providers — Settings page vs. appsettings.json
+
+`appsettings.json` (`Anthropic`, `Bedrock`, `AzureSpeech` sections) is only
+consulted once, to seed `AppSettingsStore` on a machine with no settings
+file yet. After that, everything credentials/model-related is edited from
+`/settings` in the running app and persisted to
+`%LOCALAPPDATA%\WindowsAgent\settings.json` — editing `appsettings.json`
+after first run has no effect. This means secrets don't need to live in the
+repo-adjacent publish output; they live in a per-machine file outside it
+(and outside git — see `.gitignore`). Both files are plaintext, matching
+this app's existing risk posture (see "Auth" below) — there's no secrets
+vault here, just parity with how the API key was already being handled.
+
+`ClaudeClientFactory` reads `AppSettingsStore.Current.Provider` on every
+turn, so flipping Anthropic ⇄ Bedrock on the Settings page takes effect on
+the next message with no restart.
+
 ## Setup checklist
 
-- **Anthropic**: API key in `appsettings.json` → `Anthropic:ApiKey`. Model is
-  set to `claude-sonnet-5`; drop to `claude-haiku-4-5-20251001` if you want
-  faster/cheaper responses for simple routing and reserve Sonnet for
-  anything going through `generate_code`.
+- **Anthropic**: API key + model, set from `/settings` (Claude provider ==
+  Anthropic API). Model is `claude-sonnet-5` by default; drop to
+  `claude-haiku-4-5-20251001` if you want faster/cheaper responses for
+  simple routing and reserve Sonnet for anything going through
+  `generate_code`.
+- **AWS Bedrock** (alternative to the direct Anthropic API): from
+  `/settings`, switch the provider to AWS Bedrock and either supply an
+  Access Key ID / Secret Access Key for an IAM principal with
+  `bedrock:InvokeModel`/`bedrock:Converse` on the target model, or check
+  "use default AWS credential chain" to pick up credentials from the
+  environment/shared config/IAM role instead. You'll also need the target
+  model's Bedrock model ID (or inference-profile ARN) for your region, and
+  **model access granted** for it in the Bedrock console — that's a
+  separate, one-time per-account step from IAM permissions.
 - **Azure Speech**: free F0 tier covers light personal use (check current
-  quota in the Azure portal — it changes). Key + region under `AzureSpeech`.
-- **ElevenLabs**: resurrect the account, grab an API key and a voice ID,
-  drop them under `ElevenLabs`.
+  quota in the Azure portal — it changes). Subscription key + region + TTS
+  voice, set from `/settings`; used for both the mic's speech-to-text and
+  the spoken reply (text-to-speech).
 - **Microsoft Graph** (for `send_email`): register an app in Entra ID,
   grant **Mail.Send** as an *application* (not delegated) permission, get
   admin consent, and — important — scope it with an
@@ -127,5 +177,13 @@ moving on and the user answering.
   unbounded for the life of a circuit. Fine for a session; add a trim/reset
   once you're running it for hours at a stretch.
 - **Auth**: there's no login on the Blazor app itself. Since it's driving
-  real actions on the machine, at minimum bind Kestrel to localhost only
-  until you're ready to add real auth.
+  real actions on the machine — and `/settings` now holds plaintext API
+  keys/AWS secrets — at minimum bind Kestrel to localhost only until you're
+  ready to add real auth.
+- **ElevenLabs parked, not removed.** `Voice/ElevenLabsService.cs` and its
+  `AddHttpClient<ElevenLabsService>()` registration in `Program.cs` are
+  still in the tree, but nothing injects it anymore — Azure Speech's own
+  TTS (`AzureSpeechService.SynthesizeAsync`) covers that need natively for
+  now. Revive it later by re-adding `@inject ElevenLabsService Tts` in
+  `Chat.razor` and swapping the `Speech.SynthesizeAsync` call for
+  `Tts.SynthesizeAsync`.

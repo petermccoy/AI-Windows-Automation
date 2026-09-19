@@ -16,6 +16,9 @@
     <PackageReference Include="Microsoft.Graph" Version="5.56.0" />
     <PackageReference Include="Azure.Identity" Version="1.12.0" />
 
+    <!-- Claude via AWS Bedrock (alternative to the direct Anthropic API) -->
+    <PackageReference Include="AWSSDK.BedrockRuntime" Version="4.0.101.7" />
+
     <!-- Local PowerShell execution -->
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.5" />
 

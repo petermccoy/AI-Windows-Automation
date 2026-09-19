@@ -20,16 +20,16 @@ public class ClaudeAgentOrchestrator
         "when a request is ambiguous (e.g. an email with no recipient). Keep replies brief — " +
         "this is a voice interface.";
 
-    private readonly AnthropicClient _client;
+    private readonly ClaudeClientFactory _clientFactory;
     private readonly ToolRegistry _tools;
     private readonly IConfirmationService _confirmation;
     private readonly List<AnthropicMessage> _history = new();
 
     public event Action<AgentEvent>? OnEvent;
 
-    public ClaudeAgentOrchestrator(AnthropicClient client, ToolRegistry tools, IConfirmationService confirmation)
+    public ClaudeAgentOrchestrator(ClaudeClientFactory clientFactory, ToolRegistry tools, IConfirmationService confirmation)
     {
-        _client = client;
+        _clientFactory = clientFactory;
         _tools = tools;
         _confirmation = confirmation;
     }
@@ -43,12 +43,10 @@ public class ClaudeAgentOrchestrator
             Content = new List<ContentBlock> { ContentBlock.Text_(userText) }
         });
 
-        var toolDefs = _tools.ToAnthropicToolDefinitions();
-
         // Loop: keep going while the model is asking to use tools.
         while (true)
         {
-            var response = await _client.CreateMessageAsync(_history, toolDefs, SystemPrompt, ct);
+            var response = await _clientFactory.Current.CreateMessageAsync(_history, _tools, SystemPrompt, ct);
 
             _history.Add(new AnthropicMessage { Role = "assistant", Content = response.Content });
 
