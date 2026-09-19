@@ -16,9 +16,6 @@ public class AzureSpeechService
     // Azure Speech normally responds in well under a second; a healthy call that's
     // still running after this long means the network path to the Speech endpoint
     // is stalling (proxy/firewall/VPN), not that recognition is "still thinking."
-    // Without a bound here, a stalled call can block the calling Blazor circuit's
-    // synchronization context long enough for the client's SignalR keep-alive to
-    // give up and force a reconnect — this turns that into a fast, clear failure.
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly AppSettingsStore _settings;
@@ -33,34 +30,22 @@ public class AzureSpeechService
     {
         var settings = _settings.Current.AzureSpeech;
 
-        // TEMPORARY DIAGNOSTIC LOGGING — remove once the multi-minute-hang bug is
-        // root-caused. Two prior fixes (bounding just RecognizeOnceAsync, then
-        // bounding the whole SDK sequence via Task.Run) didn't change the observed
-        // ~2-minute delay, which means the actual stall location is still unknown.
-        // These timestamps, read from the `dotnet run` console at the next repro,
-        // will show exactly which line is slow instead of guessing further.
-        Log($"TranscribeAsync start, {wavBytes.Length} bytes. ThreadPool: {ThreadPoolSnapshot()}");
-
         // The Speech SDK's SpeechRecognizer constructor (and possibly SpeechConfig
         // setup) can do blocking, synchronous connection work — not everything
-        // network-related in this SDK is an awaitable Task. Wrapping just the
-        // RecognizeOnceAsync() call in WaitAsync isn't enough to bound a stall that
-        // happens before it. Running the whole sequence on a background thread and
-        // bounding *that* task works regardless of where the blocking happens:
-        // WaitAsync stops waiting on its own timer even if the background thread
-        // stays stuck, so the caller gets control back on schedule either way.
+        // network-related in this SDK is an awaitable Task. Running the whole
+        // sequence on a background thread and bounding *that* task with WaitAsync
+        // works regardless of where a stall happens inside it: WaitAsync's timer
+        // fires on schedule even if the background thread is still stuck, so the
+        // caller gets control back either way.
         var recognition = Task.Run(() => RecognizeAsync(wavBytes, settings), ct);
 
         SpeechRecognitionResult result;
         try
         {
             result = await recognition.WaitAsync(RequestTimeout, ct);
-            Log("TranscribeAsync: recognition task completed within timeout.");
         }
         catch (TimeoutException)
         {
-            Log($"TranscribeAsync: TIMED OUT after {RequestTimeout.TotalSeconds:0}s waiting on recognition task. " +
-                $"ThreadPool: {ThreadPoolSnapshot()}");
             throw new InvalidOperationException(
                 $"Azure Speech didn't respond within {RequestTimeout.TotalSeconds:0}s — check " +
                 "AzureSpeech:SubscriptionKey/Region on the Settings page and network connectivity " +
@@ -79,40 +64,20 @@ public class AzureSpeechService
 
     private static async Task<SpeechRecognitionResult> RecognizeAsync(byte[] wavBytes, AzureSpeechSettings settings)
     {
-        Log($"RecognizeAsync: started on background thread {Environment.CurrentManagedThreadId}.");
-
         var (sampleRate, bitsPerSample, channels, dataOffset) = ParseWavHeader(wavBytes);
-        Log($"RecognizeAsync: WAV header parsed ({sampleRate}Hz, {bitsPerSample}-bit, {channels}ch).");
 
         var format = AudioStreamFormat.GetWaveFormatPCM((uint)sampleRate, (byte)bitsPerSample, (byte)channels);
         using var pushStream = AudioInputStream.CreatePushStream(format);
         pushStream.Write(wavBytes[dataOffset..]);
         pushStream.Close();
-        Log("RecognizeAsync: push stream written and closed.");
 
         var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
         speechConfig.SpeechRecognitionLanguage = "en-US";
-        Log($"RecognizeAsync: SpeechConfig created for region '{settings.Region}', key length {settings.SubscriptionKey.Length}.");
 
         using var audioConfig = AudioConfig.FromStreamInput(pushStream);
-        Log("RecognizeAsync: AudioConfig created. Constructing SpeechRecognizer (this is the suspected blocking call)...");
         using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
-        Log("RecognizeAsync: SpeechRecognizer constructed. Calling RecognizeOnceAsync()...");
 
-        var result = await recognizer.RecognizeOnceAsync();
-        Log($"RecognizeAsync: RecognizeOnceAsync() returned, Reason={result.Reason}.");
-        return result;
-    }
-
-    private static void Log(string message) =>
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] AzureSpeech: {message}");
-
-    private static string ThreadPoolSnapshot()
-    {
-        ThreadPool.GetAvailableThreads(out var availWorker, out var availIo);
-        ThreadPool.GetMinThreads(out var minWorker, out var minIo);
-        ThreadPool.GetMaxThreads(out var maxWorker, out var maxIo);
-        return $"avail={availWorker}/{availIo} min={minWorker}/{minIo} max={maxWorker}/{maxIo} (worker/io)";
+        return await recognizer.RecognizeOnceAsync();
     }
 
     /// <summary>Minimal RIFF/WAVE header parser. Scans for the "fmt " and "data"

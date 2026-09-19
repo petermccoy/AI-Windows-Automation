@@ -81,7 +81,7 @@ WindowsAgent/
     BlazorConfirmationService.cs   implements IConfirmationService via TaskCompletionSource
     Pages/Chat.razor         mic button, transcript, confirm modal
     Pages/Settings.razor     provider + credentials + Azure Speech config, backed by AppSettingsStore
-  wwwroot/js/agent.js        MediaRecorder mic capture + TTS playback
+  wwwroot/js/agent.js        Web Audio API mic capture (real PCM WAV) + TTS playback
   Program.cs                 DI wiring
   appsettings.json
 ```
@@ -161,14 +161,42 @@ the next message with no restart.
   in-process — no separate `powershell.exe` dependency, but it's a sizeable
   package; first restore will take a minute.
 
+## Voice pipeline: WAV capture and the SignalR message-size limit
+
+Two bugs compounded to make voice input crash the Blazor circuit instead of
+just failing cleanly, both now fixed:
+
+1. **Audio format.** `agent.js` used to record via `MediaRecorder` asking for
+   `audio/wav`, but browsers ignore that and record WebM/Opus regardless —
+   Azure Speech got bytes labeled WAV that weren't. Fixed by recording real
+   PCM via the Web Audio API (`AudioContext`/`ScriptProcessorNode`),
+   downsampling to 16kHz, and writing a genuine canonical WAV header
+   client-side. `AzureSpeechService.TranscribeAsync` now takes that `byte[]`
+   and parses the actual RIFF/`fmt `/`data` chunks rather than assuming a
+   fixed 44-byte layout.
+2. **SignalR message size.** Even with real WAV bytes, the JS→.NET interop
+   call carrying them (`micRecorder.stop()`'s return value, base64-encoded)
+   silently killed the circuit for anything but the shortest utterance.
+   `HubOptions.MaximumReceiveMessageSize` defaults to **32KB**, and a few
+   seconds of 16kHz/16-bit mono audio blows past that — SignalR just closes
+   the connection ("Server returned an error on close"), which surfaces to
+   the browser as "Attempting to reconnect" with no application-level
+   exception anywhere to catch. `Program.cs` raises this to 5MB via
+   `.AddHubOptions(...)`. If you need longer recordings than that covers
+   (~a couple of minutes), the documented alternative is streaming JS
+   interop instead of one big return value — see the "Maximum receive
+   message size" section of Microsoft's Blazor SignalR guidance.
+
+`AzureSpeechService` also now runs the whole Speech SDK call sequence via
+`Task.Run` bounded by a 15s `WaitAsync` (not just the final async call, since
+the SDK does some blocking synchronous setup too) — real defensive value for
+a slow/unreachable Azure endpoint, independent of the two bugs above. And
+`Chat.razor` catches exceptions around both the voice and turn-handling paths
+so any future failure here becomes a visible `[error]` log line instead of
+an unhandled exception tearing down the circuit again.
+
 ## Known gaps / next steps
 
-- **Audio format**: `agent.js` records `audio/wav` via `MediaRecorder`,
-  which most browsers actually emit as WebM/Opus regardless of the
-  requested mime type. Azure Speech wants real PCM WAV — you'll likely need
-  to either transcode client-side (Web Audio API) or decode server-side
-  (e.g. with `NAudio`) before calling `AzureSpeechService.TranscribeAsync`.
-  Flagged here rather than silently papered over.
 - **No UI-automation tool yet.** For anything without a clean API (most
   legacy Win32 apps), add a `FlaUI`-based tool later — same `IAgentTool`
   shape, just with `RequiresConfirmation = true` and a narrower, per-app

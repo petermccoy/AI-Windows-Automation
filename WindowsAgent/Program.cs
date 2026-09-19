@@ -19,7 +19,14 @@ builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent
 builder.Services.AddSingleton<AppSettingsStore>();
 
 // --- Blazor Server ---
-builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+// SignalR's default MaximumReceiveMessageSize is 32KB. The mic recorder sends its
+// whole WAV recording back from the browser as one base64 JS-interop return value
+// (agent.js's micRecorder.stop()), which blows past that for anything but the
+// shortest utterance — the server silently kills the connection rather than
+// erroring cleanly ("Server returned an error on close"). 5MB covers a couple of
+// minutes of 16kHz/16-bit mono audio; see ARCHITECTURE.md for the tradeoff.
+builder.Services.AddRazorComponents().AddInteractiveServerComponents()
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 5 * 1024 * 1024);
 
 // --- Tools (add new tools here — each is auto-registered into ToolRegistry) ---
 builder.Services.AddSingleton<IAgentTool, OpenAppTool>();
