@@ -33,23 +33,20 @@ public class AzureSpeechService
     {
         var settings = _settings.Current.AzureSpeech;
 
-        var (sampleRate, bitsPerSample, channels, dataOffset) = ParseWavHeader(wavBytes);
-
-        var format = AudioStreamFormat.GetWaveFormatPCM((uint)sampleRate, (byte)bitsPerSample, (byte)channels);
-        using var pushStream = AudioInputStream.CreatePushStream(format);
-        pushStream.Write(wavBytes[dataOffset..]);
-        pushStream.Close();
-
-        var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
-        speechConfig.SpeechRecognitionLanguage = "en-US";
-
-        using var audioConfig = AudioConfig.FromStreamInput(pushStream);
-        using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
+        // The Speech SDK's SpeechRecognizer constructor (and possibly SpeechConfig
+        // setup) can do blocking, synchronous connection work — not everything
+        // network-related in this SDK is an awaitable Task. Wrapping just the
+        // RecognizeOnceAsync() call in WaitAsync isn't enough to bound a stall that
+        // happens before it. Running the whole sequence on a background thread and
+        // bounding *that* task works regardless of where the blocking happens:
+        // WaitAsync stops waiting on its own timer even if the background thread
+        // stays stuck, so the caller gets control back on schedule either way.
+        var recognition = Task.Run(() => RecognizeAsync(wavBytes, settings), ct);
 
         SpeechRecognitionResult result;
         try
         {
-            result = await recognizer.RecognizeOnceAsync().WaitAsync(RequestTimeout, ct);
+            result = await recognition.WaitAsync(RequestTimeout, ct);
         }
         catch (TimeoutException)
         {
@@ -67,6 +64,24 @@ public class AzureSpeechService
                 $"Speech recognition canceled: {CancellationDetails.FromResult(result).ErrorDetails}"),
             _ => throw new InvalidOperationException($"Unexpected recognition result: {result.Reason}")
         };
+    }
+
+    private static async Task<SpeechRecognitionResult> RecognizeAsync(byte[] wavBytes, AzureSpeechSettings settings)
+    {
+        var (sampleRate, bitsPerSample, channels, dataOffset) = ParseWavHeader(wavBytes);
+
+        var format = AudioStreamFormat.GetWaveFormatPCM((uint)sampleRate, (byte)bitsPerSample, (byte)channels);
+        using var pushStream = AudioInputStream.CreatePushStream(format);
+        pushStream.Write(wavBytes[dataOffset..]);
+        pushStream.Close();
+
+        var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
+        speechConfig.SpeechRecognitionLanguage = "en-US";
+
+        using var audioConfig = AudioConfig.FromStreamInput(pushStream);
+        using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
+
+        return await recognizer.RecognizeOnceAsync();
     }
 
     /// <summary>Minimal RIFF/WAVE header parser. Scans for the "fmt " and "data"
@@ -108,20 +123,16 @@ public class AzureSpeechService
     public async Task<byte[]> SynthesizeAsync(string text, CancellationToken ct)
     {
         var settings = _settings.Current.AzureSpeech;
-        var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
-        speechConfig.SpeechSynthesisVoiceName = settings.Voice;
-        speechConfig.SetSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3);
 
-        // Passing a null AudioConfig means "don't play to a local device" — the
-        // synthesized audio comes back in result.AudioData instead. The cast
-        // disambiguates from the SpeechSynthesizer(SpeechConfig, AutoDetectSourceLanguageConfig)
-        // overload, which a bare null would otherwise be ambiguous against.
-        using var synthesizer = new SpeechSynthesizer(speechConfig, (AudioConfig?)null);
+        // Same rationale as TranscribeAsync: run the whole SDK sequence (including
+        // any blocking, non-awaitable setup) on a background thread so the timeout
+        // bounds wall-clock time regardless of where a stall happens inside it.
+        var synthesis = Task.Run(() => SynthesizeInternalAsync(text, settings), ct);
 
         SpeechSynthesisResult? result = null;
         try
         {
-            result = await synthesizer.SpeakTextAsync(text).WaitAsync(RequestTimeout, ct);
+            result = await synthesis.WaitAsync(RequestTimeout, ct);
 
             return result.Reason == ResultReason.SynthesizingAudioCompleted
                 ? result.AudioData
@@ -138,5 +149,19 @@ public class AzureSpeechService
         {
             result?.Dispose();
         }
+    }
+
+    private static async Task<SpeechSynthesisResult> SynthesizeInternalAsync(string text, AzureSpeechSettings settings)
+    {
+        var speechConfig = SpeechConfig.FromSubscription(settings.SubscriptionKey, settings.Region);
+        speechConfig.SpeechSynthesisVoiceName = settings.Voice;
+        speechConfig.SetSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3);
+
+        // Passing a null AudioConfig means "don't play to a local device" — the
+        // synthesized audio comes back in result.AudioData instead. The cast
+        // disambiguates from the SpeechSynthesizer(SpeechConfig, AutoDetectSourceLanguageConfig)
+        // overload, which a bare null would otherwise be ambiguous against.
+        using var synthesizer = new SpeechSynthesizer(speechConfig, (AudioConfig?)null);
+        return await synthesizer.SpeakTextAsync(text);
     }
 }
