@@ -15,6 +15,7 @@ public class AppSettings
     public AnthropicSettings Anthropic { get; set; } = new();
     public BedrockSettings Bedrock { get; set; } = new();
     public AzureSpeechSettings AzureSpeech { get; set; } = new();
+    public GoogleSettings Google { get; set; } = new();
 }
 
 public class AnthropicSettings
@@ -39,6 +40,18 @@ public class AzureSpeechSettings
     public string SubscriptionKey { get; set; } = "";
     public string Region { get; set; } = "eastus";
     public string Voice { get; set; } = "en-US-JennyNeural";
+}
+
+public class GoogleSettings
+{
+    public string ClientId { get; set; } = "";
+    public string ClientSecret { get; set; } = "";
+
+    /// <summary>Set by GoogleAuthService after a successful one-time interactive
+    /// consent. Read tools check this before doing anything else, so a never-connected
+    /// account fails fast with a clear message instead of risking an unexpected
+    /// browser popup mid-tool-call if the stored token were ever silently missing.</summary>
+    public bool Connected { get; set; } = false;
 }
 
 /// <summary>
@@ -66,13 +79,14 @@ public class AppSettingsStore
     public AppSettingsStore(
         IOptions<AnthropicOptions> anthropicDefaults,
         IOptions<BedrockOptions> bedrockDefaults,
-        IOptions<AzureSpeechOptions> azureDefaults)
+        IOptions<AzureSpeechOptions> azureDefaults,
+        IOptions<GoogleOptions> googleDefaults)
     {
         _filePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WindowsAgent", "settings.json");
 
-        _current = Load() ?? Seed(anthropicDefaults.Value, bedrockDefaults.Value, azureDefaults.Value);
+        _current = Load() ?? Seed(anthropicDefaults.Value, bedrockDefaults.Value, azureDefaults.Value, googleDefaults.Value);
     }
 
     public AppSettings Current
@@ -108,7 +122,7 @@ public class AppSettingsStore
         }
     }
 
-    private static AppSettings Seed(AnthropicOptions anthropic, BedrockOptions bedrock, AzureSpeechOptions azure) => new()
+    private static AppSettings Seed(AnthropicOptions anthropic, BedrockOptions bedrock, AzureSpeechOptions azure, GoogleOptions google) => new()
     {
         Provider = ClaudeProvider.Anthropic,
         Anthropic = new AnthropicSettings
@@ -131,6 +145,12 @@ public class AppSettingsStore
             SubscriptionKey = azure.SubscriptionKey,
             Region = azure.Region,
             Voice = azure.Voice
+        },
+        Google = new GoogleSettings
+        {
+            ClientId = google.ClientId,
+            ClientSecret = google.ClientSecret,
+            Connected = false
         }
     };
 }

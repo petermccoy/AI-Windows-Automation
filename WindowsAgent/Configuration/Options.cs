@@ -43,6 +43,17 @@ public class GraphOptions
     public string SenderUserPrincipalName { get; set; } = "";
 }
 
+/// <summary>Seed defaults for the Google OAuth "Desktop app" client used to read
+/// Gmail/Google Calendar. Unlike Graph, Google has no app-only/service-account
+/// path into a personal Gmail account — this is a per-user OAuth client ID/secret
+/// from a Google Cloud project, and the actual account access is granted via a
+/// one-time interactive consent (see GoogleAuthService).</summary>
+public class GoogleOptions
+{
+    public string ClientId { get; set; } = "";
+    public string ClientSecret { get; set; } = "";
+}
+
 public class AgentOptions
 {
     public List<string> AllowedApps { get; set; } = new();

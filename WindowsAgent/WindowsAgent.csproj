@@ -12,9 +12,15 @@
     <!-- Voice -->
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.40.0" />
 
-    <!-- Email via Microsoft Graph (Outlook) -->
+    <!-- Email/calendar via Microsoft Graph (M365/Outlook) -->
     <PackageReference Include="Microsoft.Graph" Version="5.56.0" />
     <PackageReference Include="Azure.Identity" Version="1.12.0" />
+
+    <!-- Gmail/Google Calendar (Gmail has no app-only path — this is a per-user
+         OAuth "Desktop app" client; see Google/GoogleAuthService.cs) -->
+    <PackageReference Include="Google.Apis.Auth" Version="1.75.0" />
+    <PackageReference Include="Google.Apis.Gmail.v1" Version="1.75.0.4225" />
+    <PackageReference Include="Google.Apis.Calendar.v3" Version="1.75.0.4206" />
 
     <!-- Claude via AWS Bedrock (alternative to the direct Anthropic API) -->
     <PackageReference Include="AWSSDK.BedrockRuntime" Version="4.0.101.7" />

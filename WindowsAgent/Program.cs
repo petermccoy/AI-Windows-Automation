@@ -2,6 +2,7 @@ using WindowsAgent.Agent;
 using WindowsAgent.Agent.Tools;
 using WindowsAgent.Components;
 using WindowsAgent.Configuration;
+using WindowsAgent.Google;
 using WindowsAgent.Orchestrator;
 using WindowsAgent.Voice;
 
@@ -15,8 +16,11 @@ builder.Services.Configure<BedrockOptions>(builder.Configuration.GetSection("Bed
 builder.Services.Configure<AzureSpeechOptions>(builder.Configuration.GetSection("AzureSpeech"));
 builder.Services.Configure<ElevenLabsOptions>(builder.Configuration.GetSection("ElevenLabs"));
 builder.Services.Configure<GraphOptions>(builder.Configuration.GetSection("Graph"));
+builder.Services.Configure<GoogleOptions>(builder.Configuration.GetSection("Google"));
 builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent"));
 builder.Services.AddSingleton<AppSettingsStore>();
+builder.Services.AddSingleton<GraphClientFactory>();
+builder.Services.AddSingleton<GoogleAuthService>();
 
 // --- Blazor Server ---
 // SignalR's default MaximumReceiveMessageSize is 32KB. The mic recorder sends its
@@ -32,6 +36,10 @@ builder.Services.AddRazorComponents().AddInteractiveServerComponents()
 builder.Services.AddSingleton<IAgentTool, OpenAppTool>();
 builder.Services.AddSingleton<IAgentTool, RunPowerShellTool>();
 builder.Services.AddSingleton<IAgentTool, SendEmailTool>();
+builder.Services.AddSingleton<IAgentTool, ReadCalendarTool>();
+builder.Services.AddSingleton<IAgentTool, ReadEmailTool>();
+builder.Services.AddSingleton<IAgentTool, ReadGmailTool>();
+builder.Services.AddSingleton<IAgentTool, ReadGoogleCalendarTool>();
 builder.Services.AddSingleton<IAgentTool, ClaudeCodeTool>();
 builder.Services.AddSingleton<ToolRegistry>();
 

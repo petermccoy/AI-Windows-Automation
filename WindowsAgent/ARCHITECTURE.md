@@ -62,6 +62,11 @@ WindowsAgent/
       OpenAppTool.cs         Process.Start, allowlisted
       RunPowerShellTool.cs   PowerShell SDK, timeout-bound, confirm required
       SendEmailTool.cs       Microsoft Graph (not Outlook UI automation)
+      ReadCalendarTool.cs    Graph: upcoming M365/Outlook calendar events
+      ReadEmailTool.cs       Graph: unread/flagged M365/Outlook messages
+      GraphClientFactory.cs  shared GraphServiceClient builder for the three tools above
+      ReadGmailTool.cs       Gmail API, via GoogleAuthService
+      ReadGoogleCalendarTool.cs   Google Calendar API, via GoogleAuthService
       ClaudeCodeTool.cs      shells out to `claude -p ... --output-format json`
   Orchestrator/
     IClaudeClient.cs             one CreateMessageAsync contract both backends implement
@@ -73,6 +78,8 @@ WindowsAgent/
   Voice/
     AzureSpeechService.cs    STT and TTS (native, no second voice vendor)
     ElevenLabsService.cs     TTS — present but unwired, see "Known gaps"
+  Google/
+    GoogleAuthService.cs     one-time interactive OAuth consent + silent token refresh for Gmail/Calendar
   Configuration/
     Options.cs               appsettings.json-bound seed defaults
     AppSettingsStore.cs       live settings (provider, credentials, model) edited from /settings, persisted to %LOCALAPPDATA%\WindowsAgent\settings.json
@@ -127,6 +134,38 @@ vault here, just parity with how the API key was already being handled.
 turn, so flipping Anthropic ⇄ Bedrock on the Settings page takes effect on
 the next message with no restart.
 
+## Reading calendar/mail: M365 via Graph, Gmail via Google OAuth
+
+Two genuinely separate integrations, because M365 and Gmail have no shared
+API — even though Outlook's desktop client can show both accounts in one
+inbox, Microsoft Graph only ever sees the M365 mailbox:
+
+- **M365/Outlook** (`ReadCalendarTool`, `ReadEmailTool`): reuse
+  `GraphClientFactory`'s existing app-only `GraphServiceClient` — the same
+  Entra app registration `SendEmailTool` already uses, just with
+  `Calendars.Read`/`Mail.Read` added. No new settings, no new auth flow.
+- **Gmail/Google Calendar** (`ReadGmailTool`, `ReadGoogleCalendarTool`):
+  Google has no app-only/service-account path into a *personal* Gmail
+  account the way Graph does for M365 (service accounts only work with
+  Google Workspace domain-wide delegation). This needs a real, if one-time,
+  interactive OAuth consent — `GoogleAuthService.ConnectAsync()`, wired to
+  the "Connect Google Account" button on `/settings`, uses
+  `GoogleWebAuthorizationBroker`'s standard "installed app" flow: it opens
+  your default browser to Google's consent screen and spins up a temporary
+  local HTTP listener to catch the redirect. **This only works because the
+  app runs on the same desktop you're sitting at** — it would break if this
+  were ever hosted remotely. The resulting refresh token is persisted via
+  `FileDataStore` under `%LOCALAPPDATA%\WindowsAgent\google-tokens`, so
+  after that one-time consent, every subsequent call refreshes silently.
+
+  `GoogleSettings.Connected` (in `AppSettingsStore`) gates
+  `GoogleAuthService.GetCredentialAsync` — a tool call fails fast with a
+  clear message if you've never connected, rather than risking an
+  unexpected browser popup mid-conversation if a stored token ever went
+  missing. Both Google scopes are read-only
+  (`gmail.readonly`/`calendar.readonly`) since this integration is for
+  finding things to follow up on, not sending or modifying anything.
+
 ## Setup checklist
 
 - **Anthropic**: API key + model, set from `/settings` (Claude provider ==
@@ -147,12 +186,22 @@ the next message with no restart.
   quota in the Azure portal — it changes). Subscription key + region + TTS
   voice, set from `/settings`; used for both the mic's speech-to-text and
   the spoken reply (text-to-speech).
-- **Microsoft Graph** (for `send_email`): register an app in Entra ID,
-  grant **Mail.Send** as an *application* (not delegated) permission, get
+- **Microsoft Graph** (for `send_email`, `read_calendar`, `read_email`):
+  register an app in Entra ID, grant **Mail.Send**, **Mail.Read**, and
+  **Calendars.Read** as *application* (not delegated) permissions, get
   admin consent, and — important — scope it with an
   [application access policy](https://learn.microsoft.com/en-us/graph/auth-limit-mailbox-access)
-  so the app can only send as one mailbox, not every mailbox in the tenant.
+  so the app can only access one mailbox, not every mailbox in the tenant.
   Fill in `Graph:TenantId/ClientId/ClientSecret/SenderUserPrincipalName`.
+- **Google** (for `read_gmail`, `read_google_calendar`): in Google Cloud
+  Console, create a project, enable the Gmail API and Google Calendar API,
+  and create an OAuth client of type **Desktop app** (not Web application —
+  a Desktop app client doesn't need a fixed redirect URI registered, since
+  `GoogleWebAuthorizationBroker` picks a free local port at consent time).
+  Enter its Client ID/Secret on `/settings` and click **Connect Google
+  Account**; a browser window opens for one-time consent, and if the OAuth
+  consent screen is still in "Testing" publishing status, add your Google
+  account as a test user first or the consent screen will reject it.
 - **Claude Code**: make sure the `claude` CLI is on PATH (or set the full
   path in `Agent:ClaudeCodeExecutablePath`), and point
   `Agent:ClaudeCodeWorkingDirectory` at a scratch folder you're fine with it

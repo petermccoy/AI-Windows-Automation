@@ -1,7 +1,9 @@
 @page "/settings"
 @rendermode InteractiveServer
 @using WindowsAgent.Configuration
+@using WindowsAgent.Google
 @inject AppSettingsStore SettingsStore
+@inject GoogleAuthService GoogleAuth
 
 <h3>Settings</h3>
 
@@ -85,6 +87,37 @@ else
     </div>
 </fieldset>
 
+<fieldset style="margin-bottom:12px;">
+    <legend>Google (Gmail and Google Calendar)</legend>
+    <p style="margin-top:0; color:#555;">
+        Google has no app-only path into a personal Gmail account the way Microsoft
+        Graph does for M365 &mdash; after saving a Client ID/Secret from a Google Cloud
+        OAuth "Desktop app" client below, click Connect to grant read-only access via
+        a one-time browser sign-in.
+    </p>
+    <div style="margin-bottom:8px;">
+        <label style="display:block;">Client ID</label>
+        <input @bind="_settings.Google.ClientId" style="width:100%; max-width:420px;" />
+    </div>
+    <div style="margin-bottom:8px;">
+        <label style="display:block;">Client secret</label>
+        <input type="password" @bind="_settings.Google.ClientSecret" style="width:100%; max-width:420px;" />
+    </div>
+    <div>
+        <button @onclick="Connect" disabled="@_connecting">
+            @(_connecting ? "Connecting — check your browser..." : "Connect Google Account")
+        </button>
+        @if (_settings.Google.Connected)
+        {
+            <span style="color:green; margin-left:8px;">Connected.</span>
+        }
+        @if (_connectError is not null)
+        {
+            <div style="color:#c00; margin-top:8px;">@_connectError</div>
+        }
+    </div>
+</fieldset>
+
 <button @onclick="Save">Save</button>
 @if (_saved)
 {
@@ -94,6 +127,8 @@ else
 @code {
     private AppSettings _settings = new();
     private bool _saved;
+    private bool _connecting;
+    private string? _connectError;
 
     protected override void OnInitialized()
     {
@@ -107,6 +142,27 @@ else
         SettingsStore.Save(_settings);
         _settings = Clone(SettingsStore.Current);
         _saved = true;
+    }
+
+    private async Task Connect()
+    {
+        Save(); // persist the Client ID/Secret just typed before GoogleAuthService reads them
+        _connecting = true;
+        _connectError = null;
+
+        try
+        {
+            await GoogleAuth.ConnectAsync(CancellationToken.None);
+            _settings = Clone(SettingsStore.Current); // pick up Connected = true
+        }
+        catch (Exception ex)
+        {
+            _connectError = $"Couldn't connect: {ex.Message}";
+        }
+        finally
+        {
+            _connecting = false;
+        }
     }
 
     private static AppSettings Clone(AppSettings source) => new()
@@ -132,6 +188,12 @@ else
             SubscriptionKey = source.AzureSpeech.SubscriptionKey,
             Region = source.AzureSpeech.Region,
             Voice = source.AzureSpeech.Voice
+        },
+        Google = new GoogleSettings
+        {
+            ClientId = source.Google.ClientId,
+            ClientSecret = source.Google.ClientSecret,
+            Connected = source.Google.Connected
         }
     };
 }

@@ -1,9 +1,5 @@
 using System.Text.Json;
-using Azure.Identity;
-using Microsoft.Extensions.Options;
-using Microsoft.Graph;
 using Microsoft.Graph.Models;
-using WindowsAgent.Configuration;
 
 namespace WindowsAgent.Agent.Tools;
 
@@ -16,10 +12,9 @@ namespace WindowsAgent.Agent.Tools;
 /// </summary>
 public class SendEmailTool : IAgentTool
 {
-    private readonly GraphOptions _options;
-    private GraphServiceClient? _client;
+    private readonly GraphClientFactory _graph;
 
-    public SendEmailTool(IOptions<GraphOptions> options) => _options = options.Value;
+    public SendEmailTool(GraphClientFactory graph) => _graph = graph;
 
     public string Name => "send_email";
 
@@ -52,7 +47,7 @@ public class SendEmailTool : IAgentTool
 
         try
         {
-            var client = GetClient();
+            var client = _graph.GetClient();
 
             var message = new Message
             {
@@ -64,7 +59,7 @@ public class SendEmailTool : IAgentTool
                 }
             };
 
-            await client.Users[_options.SenderUserPrincipalName]
+            await client.Users[_graph.SenderUserPrincipalName]
                 .SendMail
                 .PostAsync(new Microsoft.Graph.Users.Item.SendMail.SendMailPostRequestBody
                 {
@@ -78,16 +73,5 @@ public class SendEmailTool : IAgentTool
         {
             return ToolResult.Fail($"Failed to send email: {ex.Message}");
         }
-    }
-
-    private GraphServiceClient GetClient()
-    {
-        if (_client != null) return _client;
-
-        var credential = new ClientSecretCredential(
-            _options.TenantId, _options.ClientId, _options.ClientSecret);
-
-        _client = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
-        return _client;
     }
 }
